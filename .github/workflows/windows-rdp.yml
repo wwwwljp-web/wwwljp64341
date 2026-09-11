@@ -1,0 +1,66 @@
+name: Windows Cloud RDP
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: 1. 开启远程桌面 + 防火墙规则
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: 2. 创建管理员账号
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $pwd = $env:RDP_PASSWORD
+          if ([string]::IsNullOrEmpty($pwd)) { $pwd = "P@ssw0rd1qazXSW@#" }
+          $sec = ConvertTo-SecureString $pwd -AsPlainText -Force
+          New-LocalUser -Name "NvdAdmin" -Password $sec -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin $pwd
+          "RDP_PW=$pwd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 3. 安装并连接 Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          Start-Sleep -Seconds 10
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
+          Start-Sleep -Seconds 10
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 4. 输出连接信息
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "  RDP 服务器已就绪"
+          Write-Host "  Tailscale IP : $env:TS_IP"
+          Write-Host "  用户名       : NvdAdmin"
+          Write-Host "  密码         : $env:RDP_PW"
+          Write-Host "  连接方式     : mstsc  ->  $env:TS_IP"
+          Write-Host "=========================================="
+
+      - name: 5. 保活循环（约5小时50分，到点由下一个定时任务接力）
+        shell: powershell
+        run: |
+          $deadline = (Get-Date).AddSeconds(21000)
+          while ((Get-Date) -lt $deadline) {
+            $mem = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024, 0)
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] alive | free mem: ${mem}MB"
+            Start-Sleep -Seconds 300
+          }
