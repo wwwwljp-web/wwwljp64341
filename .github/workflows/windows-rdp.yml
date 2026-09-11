@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NTFY_TOPIC: rdp-7k2mq9xz4v
+
 jobs:
   rdp:
     runs-on: windows-latest
@@ -49,17 +52,16 @@ jobs:
           Write-Host "tailscale connected, ip=$ip"
           "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
-      - name: 4. 输出连接信息（不打印密码）
+      - name: 4. 上报连接信息 (ntfy)
         shell: powershell
         continue-on-error: true
         run: |
-          Write-Host "=========================================="
-          Write-Host " RDP SERVER READY"
-          Write-Host " Tailscale IP : $env:TS_IP"
-          Write-Host " Username     : NvdAdmin"
-          Write-Host " Password     : 见仓库 Secret RDP_PASSWORD"
-          Write-Host " Connect with : mstsc -> $env:TS_IP"
-          Write-Host "=========================================="
+          $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+          $msg = "ip=$env:TS_IP user=NvdAdmin time=$ts run=$env:GITHUB_RUN_ID"
+          $dir = [System.IO.Path]::GetTempFileName()
+          [System.IO.File]::WriteAllText($dir, $msg)
+          curl.exe -s -X POST -H "Title: RDP-READY" --data-binary "@$dir" "https://ntfy.sh/$env:NTFY_TOPIC"
+          Write-Host "reported: $msg"
 
       - name: 5. 把连接信息写入仓库 status.txt
         shell: powershell
@@ -67,17 +69,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-          $txt = "tailscale_ip=$env:TS_IP`nusername=NvdAdmin`nrun_id=$env:GITHUB_RUN_ID`nupdated=$now`n"
+          $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+          $txt = "tailscale_ip=$env:TS_IP`nusername=NvdAdmin`nrun_id=$env:GITHUB_RUN_ID`nupdated=$ts`n"
           $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($txt))
           $repo = $env:GITHUB_REPOSITORY
           $sha = (gh api "repos/$repo/contents/status.txt" --jq ".sha" 2>$null)
           if ($sha) {
-            gh api -X PUT "repos/$repo/contents/status.txt" -f message="update rdp connection info" -f content="$b64" -f branch=main -f sha="$sha"
+            gh api -X PUT "repos/$repo/contents/status.txt" -f message="update rdp info" -f content="$b64" -f branch=main -f sha="$sha"
           } else {
-            gh api -X PUT "repos/$repo/contents/status.txt" -f message="add rdp connection info" -f content="$b64" -f branch=main
+            gh api -X PUT "repos/$repo/contents/status.txt" -f message="add rdp info" -f content="$b64" -f branch=main
           }
-          Write-Host "status.txt updated"
+          Write-Host "status.txt step done"
 
       - name: 6. 保活循环（约5小时50分，到点由下一个定时任务接力）
         shell: powershell
