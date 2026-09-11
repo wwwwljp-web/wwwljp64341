@@ -17,6 +17,7 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "RDP enabled, firewall rule on"
 
       - name: 2. 创建管理员账号
         shell: powershell
@@ -29,7 +30,8 @@ jobs:
           New-LocalUser -Name "NvdAdmin" -Password $sec -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
           net user runneradmin $pwd
-          "RDP_PW=$pwd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RDP_PW=$pwd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          Write-Host "admin account ready"
 
       - name: 3. 安装并连接 Tailscale
         shell: powershell
@@ -42,25 +44,32 @@ jobs:
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
           Start-Sleep -Seconds 10
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          Write-Host "tailscale connected, ip=$ip"
 
       - name: 4. 输出连接信息
         shell: powershell
+        continue-on-error: true
         run: |
           Write-Host "=========================================="
-          Write-Host "  RDP 服务器已就绪"
-          Write-Host "  Tailscale IP : $env:TS_IP"
-          Write-Host "  用户名       : NvdAdmin"
-          Write-Host "  密码         : $env:RDP_PW"
-          Write-Host "  连接方式     : mstsc  ->  $env:TS_IP"
+          Write-Host " RDP SERVER READY"
+          Write-Host " Tailscale IP : $env:TS_IP"
+          Write-Host " Username     : NvdAdmin"
+          Write-Host " Password     : $env:RDP_PW"
+          Write-Host " Connect with : mstsc -> $env:TS_IP"
           Write-Host "=========================================="
+          Write-Host "### RDP SERVER READY" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "- Tailscale IP: $env:TS_IP" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "- Username: NvdAdmin" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "- Connect: mstsc $env:TS_IP" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       - name: 5. 保活循环（约5小时50分，到点由下一个定时任务接力）
         shell: powershell
         run: |
           $deadline = (Get-Date).AddSeconds(21000)
+          Write-Host "keep-alive started, will end at $deadline"
           while ((Get-Date) -lt $deadline) {
-            $mem = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024, 0)
-            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] alive | free mem: ${mem}MB"
+            $free = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024, 0)
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] alive | free mem: ${free}MB"
             Start-Sleep -Seconds 300
           }
