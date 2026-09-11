@@ -28,8 +28,7 @@ jobs:
           $st = (& $ts status 2>&1 | Out-String)
           $js = (& $ts status --json 2>&1 | Out-String)
           $tcp = (Test-NetConnection -ComputerName 100.97.133.100 -Port 3389 -WarningAction SilentlyContinue | Out-String)
-          $key = "${{ secrets.TAILSCALE_AUTHKEY }}"
-          $body = "AUTHKEY=$key`n`n---STATUS---`n$st`n---TCP-3389-TO-100.97.133.100---`n$tcp`n---JSON---`n$($js.Substring(0,[Math]::Min(4000,$js.Length)))"
+          $body = "---STATUS---`n$st`n---TCP-3389-TO-100.97.133.100---`n$tcp`n---JSON---`n$($js.Substring(0,[Math]::Min(4000,$js.Length)))"
           $f = [System.IO.Path]::GetTempFileName()
           [System.IO.File]::WriteAllText($f, $body)
           curl.exe -s -X POST -H "Title: DIAG" --data-binary "@$f" "https://ntfy.sh/$env:NTFY_TOPIC"
