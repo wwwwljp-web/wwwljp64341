@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 */6 * * *'
 
+permissions:
+  contents: write
+
 jobs:
   rdp:
     runs-on: windows-latest
@@ -30,7 +33,6 @@ jobs:
           New-LocalUser -Name "NvdAdmin" -Password $sec -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
           net user runneradmin $pwd
-          "RDP_PW=$pwd" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
           Write-Host "admin account ready"
 
       - name: 3. 安装并连接 Tailscale
@@ -43,11 +45,11 @@ jobs:
           Start-Sleep -Seconds 10
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
           Start-Sleep -Seconds 10
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4 | Out-String).Trim()
           Write-Host "tailscale connected, ip=$ip"
+          "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
-      - name: 4. 输出连接信息
+      - name: 4. 输出连接信息（不打印密码）
         shell: powershell
         continue-on-error: true
         run: |
@@ -55,19 +57,33 @@ jobs:
           Write-Host " RDP SERVER READY"
           Write-Host " Tailscale IP : $env:TS_IP"
           Write-Host " Username     : NvdAdmin"
-          Write-Host " Password     : $env:RDP_PW"
+          Write-Host " Password     : 见仓库 Secret RDP_PASSWORD"
           Write-Host " Connect with : mstsc -> $env:TS_IP"
           Write-Host "=========================================="
-          Write-Host "### RDP SERVER READY" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          Write-Host "- Tailscale IP: $env:TS_IP" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          Write-Host "- Username: NvdAdmin" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          Write-Host "- Connect: mstsc $env:TS_IP" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: 5. 保活循环（约5小时50分，到点由下一个定时任务接力）
+      - name: 5. 把连接信息写入仓库 status.txt
+        shell: powershell
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+          $txt = "tailscale_ip=$env:TS_IP`nusername=NvdAdmin`nrun_id=$env:GITHUB_RUN_ID`nupdated=$now`n"
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($txt))
+          $repo = $env:GITHUB_REPOSITORY
+          $sha = (gh api "repos/$repo/contents/status.txt" --jq ".sha" 2>$null)
+          if ($sha) {
+            gh api -X PUT "repos/$repo/contents/status.txt" -f message="update rdp connection info" -f content="$b64" -f branch=main -f sha="$sha"
+          } else {
+            gh api -X PUT "repos/$repo/contents/status.txt" -f message="add rdp connection info" -f content="$b64" -f branch=main
+          }
+          Write-Host "status.txt updated"
+
+      - name: 6. 保活循环（约5小时50分，到点由下一个定时任务接力）
         shell: powershell
         run: |
           $deadline = (Get-Date).AddSeconds(21000)
-          Write-Host "keep-alive started, will end at $deadline"
+          Write-Host "keep-alive started, ends at $deadline"
           while ((Get-Date) -lt $deadline) {
             $free = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1024, 0)
             Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] alive | free mem: ${free}MB"
