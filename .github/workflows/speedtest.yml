@@ -1,0 +1,43 @@
+name: Speedtest
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  speed:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: ookla speedtest
+        shell: powershell
+        continue-on-error: true
+        run: |
+          Invoke-WebRequest "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile "$env:TEMP\st.zip"
+          Expand-Archive "$env:TEMP\st.zip" -DestinationPath "$env:TEMP\st" -Force
+          $o = (& "$env:TEMP\st\speedtest.exe" --accept-license --accept-gdpr -f json | Out-String)
+          Write-Host $o
+          [System.IO.File]::WriteAllText("$env:TEMP\st.json", $o)
+      - name: cloudflare download and upload test
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $d = (curl.exe -s -o NUL -w "%{speed_download} %{time_total}" "https://speed.cloudflare.com/__down?bytes=200000000")
+          Write-Host "cloudflare down(bytes/s, s): $d"
+          $up = "x" * 20000000
+          $p = "$env:TEMP\up.bin"
+          [System.IO.File]::WriteAllText($p, $up)
+          $u = (curl.exe -s -o NUL -w "%{speed_upload} %{time_total}" -X POST --data-binary "@$p" "https://speed.cloudflare.com/__up")
+          Write-Host "cloudflare up(bytes/s, s): $u"
+          "CFDOWN=$d" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "CFUP=$u" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+      - name: report
+        shell: powershell
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_DIAG_TOPIC }}
+        run: |
+          $st = (Get-Content "$env:TEMP\st.json" -Raw)
+          $body = "---OOKLA---`n$st`n---CLOUDFLARE-DOWN (bytes/s time_s)---`n$env:CFDOWN`n---CLOUDFLARE-UP---`n$env:CFUP"
+          $f = [System.IO.Path]::GetTempFileName()
+          [System.IO.File]::WriteAllText($f, $body)
+          curl.exe -s -X POST -H "Title: SPEEDTEST" --data-binary "@$f" "https://ntfy.sh/$env:NTFY_TOPIC"
+          Write-Host "reported"
