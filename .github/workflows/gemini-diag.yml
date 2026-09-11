@@ -8,24 +8,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: test key and generation without exposing it
+      - name: test Gemini key and generation
         env:
           GEMINI_KEY: ${{ secrets.GEMINI_DIAG_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_DIAG_TOPIC }}
         run: |
           set +x
-          list=$(curl -sS --max-time 40 -w ' HTTP_STATUS:%{http_code}' -H "x-goog-api-key: $GEMINI_KEY" 'https://generativelanguage.googleapis.com/v1beta/models')
-          list_status=${list##*HTTP_STATUS:}
-          list_payload=${list% HTTP_STATUS:*}
           payload='{"contents":[{"parts":[{"text":"只回复：Gemini通了"}]}],"generationConfig":{"maxOutputTokens":20}}'
           gen=$(curl -sS --max-time 90 -w ' HTTP_STATUS:%{http_code}' -H "x-goog-api-key: $GEMINI_KEY" -H 'Content-Type: application/json' -d "$payload" 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent')
-          gen_status=${gen##*HTTP_STATUS:}
-          gen_payload=${gen% HTTP_STATUS:*}
-          if [ "$gen_status" = 200 ]; then
-            text=$(printf '%s' "$gen_payload" | python3 -c 'import sys,json; print(json.load(sys.stdin)["candidates"][0]["content"]["parts"][0]["text"][:100])')
-            msg="GEMINI_GENERATE=OK list_http=$list_status generate_http=200 reply=$text"
+          status=${gen##*HTTP_STATUS:}
+          data=${gen% HTTP_STATUS:*}
+          if [ "$status" = 200 ]; then
+            text=$(printf '%s' "$data" | python3 -c 'import sys,json; d=json.load(sys.stdin); c=d.get("candidates",[{}])[0]; parts=(c.get("content") or {}).get("parts") or []; print("".join(str(p.get("text", "")) for p in parts)[:200])')
+            msg="GEMINI_GENERATE=OK http=200 reply=$text"
           else
-            safe=$(printf '%s' "$gen_payload" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",{}).get("message","unknown")[:300])')
-            msg="GEMINI_GENERATE=FAIL list_http=$list_status generate_http=$gen_status error=$safe"
+            safe=$(printf '%s' "$data" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("error",{}).get("message","unknown")[:300])')
+            msg="GEMINI_GENERATE=FAIL http=$status error=$safe"
           fi
           curl -sS -X POST --data-binary "$msg" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null
+          echo "$msg"
